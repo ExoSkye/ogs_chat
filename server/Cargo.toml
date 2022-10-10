@@ -3,8 +3,6 @@ name = "server"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 libp2p = "0.48.0"
 tokio = { version = "1", features = ["full"] }
@@ -14,6 +12,6 @@ base58 = "0.2.0"
 ring = "0.16.20"
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 rustls = "0.20.6"
-rpassword = "7.0.0"
-colored = "2.0.0"
 rust-argon2 = "1.0.0"
+
+logger = { path = "../logger" }

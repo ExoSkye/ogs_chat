@@ -2,3 +2,5 @@
 /Cargo.lock
 
 .idea/
+/config.yaml
+/server.log
