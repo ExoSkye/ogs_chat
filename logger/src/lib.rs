@@ -1,5 +1,6 @@
 #![allow(unreachable_code)]
 
+use std::io;
 use std::io::Write;
 use std::time::{Instant};
 use colored::Colorize;
@@ -126,6 +127,7 @@ impl Logger {
             InputType::Plaintext => {
                 let mut input = String::new();
                 print!("{}", message.blue());
+                io::stdout().flush().expect("Failed to flush stdout");
                 std::io::stdin().read_line(&mut input).unwrap();
                 input
             },
