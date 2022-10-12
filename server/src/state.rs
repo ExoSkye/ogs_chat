@@ -9,23 +9,34 @@ use ring::rand::{SecureRandom, SystemRandom};
 use chacha20poly1305::KeyInit;
 use logger::{InputType, Logger, LogSeverity};
 
-fn argon2_config<'a>() -> argon2::Config<'a> {
+fn argon2_config<'a>(rounds: u32) -> argon2::Config<'a> {
     return argon2::Config {
         variant: argon2::Variant::Argon2id,
         hash_length: 32,
         lanes: 8,
-        mem_cost: 16 * 1024,
-        time_cost: 8,
+        mem_cost: 64 * 1024,
+        time_cost: rounds,
         ..Default::default()
     };
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct SerializableConfig {
-    pub private_key_encrypted: String,
+pub struct EncryptedPrivateKey {
+    pub ciphertext: String,
     pub nonce: String,
-    pub hash: String,
-    pub salt: String
+    pub salt: String,
+    pub hash: PasswordHash
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PasswordHash {
+    pub sha512_hash: String,
+    pub rounds: u32
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SerializableConfig {
+    pub private_key: EncryptedPrivateKey
 }
 
 impl SerializableConfig {
@@ -36,6 +47,14 @@ impl SerializableConfig {
 
         let password = Logger::get_input(InputType::Password, "Enter a password to encrypt your private key with: ");
 
+        let rounds_str = Logger::get_input(InputType::Plaintext, "Enter the number of rounds to use for key derivation (higher is more secure, but slower, minimum value is 4): ");
+
+        let rounds = rounds_str.strip_suffix("\n").unwrap().parse::<u32>();
+
+        if rounds.clone().unwrap_or_default() < 4 || rounds.is_err() {
+            Logger::log_then_abort(LogSeverity::Error, "Config", "Invalid number of rounds", None);
+        }
+
         let rand = SystemRandom::new();
 
         let mut salt = [0u8; 32];
@@ -44,7 +63,7 @@ impl SerializableConfig {
         let mut nonce = [0u8; 24];
         rand.fill(&mut nonce).unwrap();
 
-        let argon_config = argon2_config();
+        let argon_config = argon2_config(rounds.unwrap());
 
         let chacha_key = argon2::hash_raw(password.as_bytes(), &salt, &argon_config).unwrap();
 
@@ -55,10 +74,12 @@ impl SerializableConfig {
         let private_key_encrypted = cipher.encrypt(&nonce.into(), key.to_protobuf_encoding().unwrap().as_slice()).unwrap().to_base58();
 
         let new_cfg = SerializableConfig {
-            private_key_encrypted,
-            nonce: nonce.to_base58(),
-            salt: salt.to_base58(),
-            hash: pass_hash.as_ref().to_base58(),
+            private_key: EncryptedPrivateKey {
+                ciphertext: private_key_encrypted,
+                nonce: nonce.to_base58(),
+                salt: salt.to_base58(),
+                hash: PasswordHash { sha512_hash: pass_hash.as_ref().to_base58(), rounds: argon_config.time_cost }
+            }
         };
 
         Logger::log(LogSeverity::Info, "Config", "Setup finished", None);
@@ -71,7 +92,8 @@ impl SerializableConfig {
             Ok(config) => config,
             Err(_) => {
                 let config = SerializableConfig::new();
-                let config_str = serde_yaml::to_string(&config).unwrap();
+                let mut config_str = serde_yaml::to_string(&config).unwrap();
+                config_str = "# Do not touch the private key unless you know what you're doing\n\n".to_string() + &config_str;
                 std::fs::write("config.yaml", &config_str).unwrap();
                 config_str
             }
@@ -81,7 +103,8 @@ impl SerializableConfig {
     }
 
     pub fn save(&self) {
-        let config = serde_yaml::to_string(&self).unwrap();
+        let mut config = serde_yaml::to_string(&self).unwrap();
+        config = "# Do not touch the private key unless you know what you're doing\n\n".to_string() + &config;
         std::fs::write("config.yaml", config).unwrap();
     }
 }
@@ -108,7 +131,7 @@ impl Config {
 
             let pass_hash = ring::digest::digest(&ring::digest::SHA512, password.as_bytes());
 
-            if pass_hash.as_ref().to_base58() != source.hash {
+            if pass_hash.as_ref().to_base58() != source.private_key.hash.sha512_hash {
                 Logger::log(LogSeverity::Error, "Config", "Incorrect password entered", None);
             } else {
                 pass_correct = true;
@@ -126,17 +149,17 @@ impl Config {
         }
 
 
-        let argon_config = argon2_config();
+        let argon_config = argon2_config(source.private_key.hash.rounds);
 
-        let chacha_key = argon2::hash_raw(password.as_bytes(), &source.salt.from_base58().unwrap(), &argon_config).unwrap();
+        let chacha_key = argon2::hash_raw(password.as_bytes(), &source.private_key.salt.from_base58().unwrap(), &argon_config).unwrap();
 
         let cipher = XChaCha20Poly1305::new(chacha_key[..32].as_ref().into());
 
-        let nonce: [u8; 24] = source.nonce.from_base58().unwrap().try_into().unwrap();
+        let nonce: [u8; 24] = source.private_key.nonce.from_base58().unwrap().try_into().unwrap();
 
         let private_key = match cipher.decrypt(
             &nonce.into(),
-            match source.private_key_encrypted.from_base58() {
+            match source.private_key.ciphertext.from_base58() {
                 Ok(key) => Ok(key),
                 Err(_) => Err(Logger::log_then_abort(LogSeverity::Fatal, "Config", "Failed to convert encrypted private key from base 58", None))
             }.unwrap().as_slice()
